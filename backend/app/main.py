@@ -1,7 +1,8 @@
 from decimal import Decimal
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -12,7 +13,9 @@ from app.schemas import (
     DashboardSummary,
     MaterialOut,
     PaymentClaimOut,
+    ProjectCreate,
     ProjectCostCenterOut,
+    ProjectUpdate,
     PurchaseOrderOut,
     WorkItemCostOut,
 )
@@ -36,6 +39,84 @@ def percent(numerator: Decimal, denominator: Decimal) -> Decimal:
     if denominator == 0:
         return Decimal("0")
     return (numerator / denominator * Decimal("100")).quantize(Decimal("0.01"))
+
+
+def project_cost_center_query(project_id: int | None = None):
+    cost_by_project = (
+        select(CostEntry.project_id, func.coalesce(func.sum(CostEntry.amount), 0).label("actual_cost"))
+        .group_by(CostEntry.project_id)
+        .subquery()
+    )
+    claims_by_project = (
+        select(PaymentClaim.project_id, func.coalesce(func.sum(PaymentClaim.approved_amount), 0).label("approved_claims"))
+        .group_by(PaymentClaim.project_id)
+        .subquery()
+    )
+    query = (
+        select(
+            Project.id,
+            Project.code,
+            Project.name,
+            Client.name.label("client_name"),
+            Project.project_type,
+            Project.location,
+            Project.status,
+            Project.contract_amount,
+            Project.budget_amount,
+            func.coalesce(cost_by_project.c.actual_cost, 0).label("actual_cost"),
+            func.coalesce(claims_by_project.c.approved_claims, 0).label("approved_claims"),
+            Project.progress_percent,
+            Project.start_date,
+            Project.planned_finish_date,
+        )
+        .join(Client)
+        .outerjoin(cost_by_project, Project.id == cost_by_project.c.project_id)
+        .outerjoin(claims_by_project, Project.id == claims_by_project.c.project_id)
+    )
+    if project_id is not None:
+        query = query.where(Project.id == project_id)
+    return query.order_by(Project.code)
+
+
+def project_cost_center_from_row(row) -> ProjectCostCenterOut:
+    return ProjectCostCenterOut(
+        id=row.id,
+        code=row.code,
+        name=row.name,
+        client_name=row.client_name,
+        project_type=row.project_type,
+        location=row.location,
+        status=row.status,
+        contract_amount=row.contract_amount,
+        budget_amount=row.budget_amount,
+        actual_cost=row.actual_cost,
+        approved_claims=row.approved_claims,
+        progress_percent=row.progress_percent,
+        cost_to_budget_percent=percent(row.actual_cost, row.budget_amount),
+        estimated_margin=row.contract_amount - row.actual_cost,
+        start_date=row.start_date,
+        planned_finish_date=row.planned_finish_date,
+    )
+
+
+def get_project_cost_center(db: Session, project_id: int) -> ProjectCostCenterOut:
+    row = db.execute(project_cost_center_query(project_id)).first()
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    return project_cost_center_from_row(row)
+
+
+def get_or_create_client(db: Session, client_name: str) -> Client:
+    cleaned_name = client_name.strip()
+    if not cleaned_name:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Client name is required")
+    client = db.scalar(select(Client).where(Client.name == cleaned_name))
+    if client is not None:
+        return client
+    client = Client(name=cleaned_name, contact_name=None, phone=None)
+    db.add(client)
+    db.flush()
+    return client
 
 
 @app.get("/health")
@@ -82,58 +163,73 @@ def dashboard(db: Session = Depends(get_db)) -> DashboardSummary:
 
 @app.get("/projects", response_model=list[ProjectCostCenterOut])
 def projects(db: Session = Depends(get_db)) -> list[ProjectCostCenterOut]:
-    cost_by_project = (
-        select(CostEntry.project_id, func.coalesce(func.sum(CostEntry.amount), 0).label("actual_cost"))
-        .group_by(CostEntry.project_id)
-        .subquery()
-    )
-    claims_by_project = (
-        select(PaymentClaim.project_id, func.coalesce(func.sum(PaymentClaim.approved_amount), 0).label("approved_claims"))
-        .group_by(PaymentClaim.project_id)
-        .subquery()
-    )
-    rows = db.execute(
-        select(
-            Project.id,
-            Project.code,
-            Project.name,
-            Client.name.label("client_name"),
-            Project.project_type,
-            Project.location,
-            Project.status,
-            Project.contract_amount,
-            Project.budget_amount,
-            func.coalesce(cost_by_project.c.actual_cost, 0).label("actual_cost"),
-            func.coalesce(claims_by_project.c.approved_claims, 0).label("approved_claims"),
-            Project.progress_percent,
-            Project.planned_finish_date,
-        )
-        .join(Client)
-        .outerjoin(cost_by_project, Project.id == cost_by_project.c.project_id)
-        .outerjoin(claims_by_project, Project.id == claims_by_project.c.project_id)
-        .order_by(Project.code)
-    )
+    return [project_cost_center_from_row(row) for row in db.execute(project_cost_center_query())]
 
-    return [
-        ProjectCostCenterOut(
-            id=row.id,
-            code=row.code,
-            name=row.name,
-            client_name=row.client_name,
-            project_type=row.project_type,
-            location=row.location,
-            status=row.status,
-            contract_amount=row.contract_amount,
-            budget_amount=row.budget_amount,
-            actual_cost=row.actual_cost,
-            approved_claims=row.approved_claims,
-            progress_percent=row.progress_percent,
-            cost_to_budget_percent=percent(row.actual_cost, row.budget_amount),
-            estimated_margin=row.contract_amount - row.actual_cost,
-            planned_finish_date=row.planned_finish_date,
-        )
-        for row in rows
-    ]
+
+@app.post("/projects", response_model=ProjectCostCenterOut, status_code=status.HTTP_201_CREATED)
+def create_project(payload: ProjectCreate, db: Session = Depends(get_db)) -> ProjectCostCenterOut:
+    client = get_or_create_client(db, payload.client_name)
+    project = Project(
+        code=payload.code.strip(),
+        name=payload.name.strip(),
+        client_id=client.id,
+        project_type=payload.project_type.strip(),
+        location=payload.location.strip(),
+        status=payload.status.strip(),
+        contract_amount=payload.contract_amount,
+        budget_amount=payload.budget_amount,
+        start_date=payload.start_date,
+        planned_finish_date=payload.planned_finish_date,
+        progress_percent=payload.progress_percent,
+    )
+    db.add(project)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Project code already exists") from exc
+    return get_project_cost_center(db, project.id)
+
+
+@app.patch("/projects/{project_id}", response_model=ProjectCostCenterOut)
+def update_project(project_id: int, payload: ProjectUpdate, db: Session = Depends(get_db)) -> ProjectCostCenterOut:
+    project = db.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    update_data = payload.model_dump(exclude_unset=True)
+    client_name = update_data.pop("client_name", None)
+    if client_name is not None:
+        project.client_id = get_or_create_client(db, client_name).id
+
+    for field_name, value in update_data.items():
+        if isinstance(value, str):
+            value = value.strip()
+        setattr(project, field_name, value)
+
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Project update conflicts with existing data") from exc
+    return get_project_cost_center(db, project.id)
+
+
+@app.delete("/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_project(project_id: int, db: Session = Depends(get_db)) -> None:
+    project = db.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    db.delete(project)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Project has related operational records and cannot be deleted",
+        ) from exc
 
 
 @app.get("/work-items", response_model=list[WorkItemCostOut])

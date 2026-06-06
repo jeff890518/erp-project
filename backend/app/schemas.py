@@ -1,7 +1,7 @@
 from datetime import date
 from decimal import Decimal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class DashboardSummary(BaseModel):
@@ -29,7 +29,35 @@ class ProjectCostCenterOut(BaseModel):
     progress_percent: Decimal
     cost_to_budget_percent: Decimal
     estimated_margin: Decimal
+    start_date: date
     planned_finish_date: date
+
+
+class ProjectCreate(BaseModel):
+    code: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    client_name: str = Field(min_length=1)
+    project_type: str = Field(min_length=1)
+    location: str = Field(min_length=1)
+    status: str = "planning"
+    contract_amount: Decimal = Decimal("0")
+    budget_amount: Decimal = Decimal("0")
+    start_date: date
+    planned_finish_date: date
+    progress_percent: Decimal = Field(default=Decimal("0"), ge=0, le=100)
+
+
+class ProjectUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1)
+    client_name: str | None = Field(default=None, min_length=1)
+    project_type: str | None = Field(default=None, min_length=1)
+    location: str | None = Field(default=None, min_length=1)
+    status: str | None = None
+    contract_amount: Decimal | None = None
+    budget_amount: Decimal | None = None
+    start_date: date | None = None
+    planned_finish_date: date | None = None
+    progress_percent: Decimal | None = Field(default=None, ge=0, le=100)
 
 
 class WorkItemCostOut(BaseModel):
