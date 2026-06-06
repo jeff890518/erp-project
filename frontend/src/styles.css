@@ -79,6 +79,39 @@ nav a:hover {
   margin-bottom: 24px;
 }
 
+.topbar-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.language-switcher {
+  background: #ffffff;
+  border: 1px solid #dce3ea;
+  border-radius: 8px;
+  display: inline-flex;
+  padding: 3px;
+}
+
+.language-switcher button {
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: #526273;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  min-width: 46px;
+  padding: 6px 10px;
+}
+
+.language-switcher button.active {
+  background: #1f2933;
+  color: #ffffff;
+}
+
 .eyebrow {
   color: #5a6b7b;
   font-size: 13px;
@@ -335,6 +368,10 @@ h2 {
   .list-item {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .topbar-actions {
+    justify-content: flex-start;
   }
 
   .list-item div:last-child {
