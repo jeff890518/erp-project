@@ -34,9 +34,16 @@ a {
 
 .brand {
   align-items: center;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
   display: flex;
+  font: inherit;
   gap: 12px;
   padding: 4px 4px 28px;
+  text-align: left;
+  width: 100%;
 }
 
 .brand strong,
@@ -47,6 +54,10 @@ a {
 .brand span {
   color: #a9b8c7;
   font-size: 13px;
+}
+
+.brand:hover strong {
+  color: #ffffff;
 }
 
 nav {
@@ -202,7 +213,7 @@ h2 {
 .kpi-grid {
   display: grid;
   gap: 14px;
-  grid-template-columns: repeat(5, minmax(150px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   margin-bottom: 18px;
 }
 
@@ -311,6 +322,35 @@ h2 {
   padding: 0 18px 18px;
 }
 
+.flow-steps {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  padding: 18px;
+}
+
+.flow-steps div {
+  background: #f8fafb;
+  border: 1px solid #edf1f5;
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.flow-steps strong,
+.flow-steps span {
+  display: block;
+}
+
+.flow-steps strong {
+  font-size: 24px;
+}
+
+.flow-steps span {
+  color: #687888;
+  font-size: 13px;
+  margin-top: 4px;
+}
+
 .table {
   display: grid;
   overflow-x: auto;
@@ -409,6 +449,14 @@ h2 {
   font-size: 13px;
 }
 
+.action-row {
+  display: flex !important;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
 .status-tag {
   background: #eef5ff;
   border-radius: 999px;
@@ -503,6 +551,10 @@ h2 {
     grid-template-columns: repeat(2, minmax(150px, 1fr));
   }
 
+  .flow-steps {
+    grid-template-columns: repeat(2, minmax(120px, 1fr));
+  }
+
   .panel.wide {
     grid-column: 1 / -1;
   }
@@ -525,6 +577,7 @@ h2 {
   .kpi-grid,
   .content-grid,
   .compact-form,
+  .flow-steps,
   .form-grid {
     grid-template-columns: 1fr;
   }
@@ -549,5 +602,9 @@ h2 {
   .list-item div:last-child {
     justify-items: start;
     text-align: left;
+  }
+
+  .action-row {
+    justify-content: flex-start;
   }
 }

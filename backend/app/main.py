@@ -16,11 +16,22 @@ from app.schemas import (
     ProjectCreate,
     ProjectCostCenterOut,
     ProjectUpdate,
+    PurchaseOrderCreate,
     PurchaseOrderOut,
+    PurchaseOrderStatusUpdate,
+    PurchaseOrderUpdate,
     WorkItemCostOut,
 )
 
 app = FastAPI(title="Construction ERP API", version="0.2.0")
+
+PURCHASE_ORDER_STATUSES = {"draft", "submitted", "approved", "received"}
+PURCHASE_ORDER_TRANSITIONS = {
+    "draft": {"submitted"},
+    "submitted": {"approved", "draft"},
+    "approved": {"received"},
+    "received": set(),
+}
 
 app.add_middleware(
     CORSMiddleware,
@@ -119,6 +130,74 @@ def get_or_create_client(db: Session, client_name: str) -> Client:
     return client
 
 
+def get_or_create_supplier(db: Session, supplier_name: str) -> Supplier:
+    cleaned_name = supplier_name.strip()
+    if not cleaned_name:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Supplier name is required")
+    supplier = db.scalar(select(Supplier).where(Supplier.name == cleaned_name))
+    if supplier is not None:
+        return supplier
+    supplier = Supplier(name=cleaned_name, supplier_type="material", phone=None)
+    db.add(supplier)
+    db.flush()
+    return supplier
+
+
+def get_project_by_code(db: Session, project_code: str) -> Project:
+    cleaned_code = project_code.strip()
+    project = db.scalar(select(Project).where(Project.code == cleaned_code))
+    if project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    return project
+
+
+def validate_purchase_order_status(next_status: str) -> str:
+    cleaned_status = next_status.strip()
+    if cleaned_status not in PURCHASE_ORDER_STATUSES:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid purchase order status")
+    return cleaned_status
+
+
+def purchase_order_query(purchase_order_id: int | None = None):
+    query = (
+        select(
+            PurchaseOrder.id,
+            PurchaseOrder.po_no,
+            Project.code.label("project_code"),
+            Project.name.label("project_name"),
+            Supplier.name.label("supplier_name"),
+            PurchaseOrder.status,
+            PurchaseOrder.order_amount,
+            PurchaseOrder.ordered_at,
+        )
+        .join(Project, PurchaseOrder.project_id == Project.id)
+        .join(Supplier, PurchaseOrder.supplier_id == Supplier.id)
+    )
+    if purchase_order_id is not None:
+        query = query.where(PurchaseOrder.id == purchase_order_id)
+    return query.order_by(PurchaseOrder.ordered_at.desc(), PurchaseOrder.po_no)
+
+
+def get_purchase_order_out(db: Session, purchase_order_id: int) -> PurchaseOrderOut:
+    row = db.execute(purchase_order_query(purchase_order_id)).first()
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Purchase order not found")
+    return PurchaseOrderOut(**row._mapping)
+
+
+def change_purchase_order_status(purchase_order: PurchaseOrder, next_status: str) -> None:
+    cleaned_status = validate_purchase_order_status(next_status)
+    if cleaned_status == purchase_order.status:
+        return
+    allowed_statuses = PURCHASE_ORDER_TRANSITIONS.get(purchase_order.status, set())
+    if cleaned_status not in allowed_statuses:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot move purchase order from {purchase_order.status} to {cleaned_status}",
+        )
+    purchase_order.status = cleaned_status
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -138,6 +217,19 @@ def dashboard(db: Session = Depends(get_db)) -> DashboardSummary:
     low_stock_count = db.scalar(
         select(func.count(Material.id)).where(Material.stock_quantity <= Material.reorder_level)
     ) or 0
+    submitted_purchase_order_count = db.scalar(
+        select(func.count(PurchaseOrder.id)).where(PurchaseOrder.status == "submitted")
+    ) or 0
+    approved_purchase_order_amount = decimal_or_zero(
+        db.scalar(
+            select(func.coalesce(func.sum(PurchaseOrder.order_amount), 0)).where(PurchaseOrder.status == "approved")
+        )
+    )
+    received_purchase_order_amount = decimal_or_zero(
+        db.scalar(
+            select(func.coalesce(func.sum(PurchaseOrder.order_amount), 0)).where(PurchaseOrder.status == "received")
+        )
+    )
 
     cost_by_project = (
         select(CostEntry.project_id, func.coalesce(func.sum(CostEntry.amount), 0).label("actual_cost"))
@@ -158,6 +250,9 @@ def dashboard(db: Session = Depends(get_db)) -> DashboardSummary:
         total_approved_claims=total_approved_claims,
         low_stock_count=low_stock_count,
         over_budget_project_count=over_budget_project_count,
+        submitted_purchase_order_count=submitted_purchase_order_count,
+        approved_purchase_order_amount=approved_purchase_order_amount,
+        received_purchase_order_amount=received_purchase_order_amount,
     )
 
 
@@ -293,23 +388,90 @@ def materials(db: Session = Depends(get_db)) -> list[MaterialOut]:
 
 @app.get("/purchase-orders", response_model=list[PurchaseOrderOut])
 def purchase_orders(db: Session = Depends(get_db)) -> list[PurchaseOrderOut]:
-    rows = db.execute(
-        select(
-            PurchaseOrder.id,
-            PurchaseOrder.po_no,
-            Project.code.label("project_code"),
-            Project.name.label("project_name"),
-            Supplier.name.label("supplier_name"),
-            PurchaseOrder.status,
-            PurchaseOrder.order_amount,
-            PurchaseOrder.ordered_at,
-        )
-        .join(Project, PurchaseOrder.project_id == Project.id)
-        .join(Supplier, PurchaseOrder.supplier_id == Supplier.id)
-        .order_by(PurchaseOrder.ordered_at.desc())
-    )
+    rows = db.execute(purchase_order_query())
 
     return [PurchaseOrderOut(**row._mapping) for row in rows]
+
+
+@app.post("/purchase-orders", response_model=PurchaseOrderOut, status_code=status.HTTP_201_CREATED)
+def create_purchase_order(payload: PurchaseOrderCreate, db: Session = Depends(get_db)) -> PurchaseOrderOut:
+    project = get_project_by_code(db, payload.project_code)
+    supplier = get_or_create_supplier(db, payload.supplier_name)
+    purchase_order = PurchaseOrder(
+        po_no=payload.po_no.strip(),
+        project_id=project.id,
+        supplier_id=supplier.id,
+        status=validate_purchase_order_status(payload.status),
+        order_amount=payload.order_amount,
+        ordered_at=payload.ordered_at,
+    )
+    db.add(purchase_order)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Purchase order number already exists") from exc
+    return get_purchase_order_out(db, purchase_order.id)
+
+
+@app.patch("/purchase-orders/{purchase_order_id}", response_model=PurchaseOrderOut)
+def update_purchase_order(
+    purchase_order_id: int,
+    payload: PurchaseOrderUpdate,
+    db: Session = Depends(get_db),
+) -> PurchaseOrderOut:
+    purchase_order = db.get(PurchaseOrder, purchase_order_id)
+    if purchase_order is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Purchase order not found")
+    if purchase_order.status == "received":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Received purchase orders cannot be edited")
+
+    update_data = payload.model_dump(exclude_unset=True)
+    project_code = update_data.pop("project_code", None)
+    supplier_name = update_data.pop("supplier_name", None)
+    next_status = update_data.pop("status", None)
+    if project_code is not None:
+        purchase_order.project_id = get_project_by_code(db, project_code).id
+    if supplier_name is not None:
+        purchase_order.supplier_id = get_or_create_supplier(db, supplier_name).id
+    if next_status is not None:
+        change_purchase_order_status(purchase_order, next_status)
+
+    for field_name, value in update_data.items():
+        setattr(purchase_order, field_name, value)
+
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Purchase order update conflicts with existing data") from exc
+    return get_purchase_order_out(db, purchase_order.id)
+
+
+@app.patch("/purchase-orders/{purchase_order_id}/status", response_model=PurchaseOrderOut)
+def update_purchase_order_status(
+    purchase_order_id: int,
+    payload: PurchaseOrderStatusUpdate,
+    db: Session = Depends(get_db),
+) -> PurchaseOrderOut:
+    purchase_order = db.get(PurchaseOrder, purchase_order_id)
+    if purchase_order is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Purchase order not found")
+    change_purchase_order_status(purchase_order, payload.status)
+    db.commit()
+    return get_purchase_order_out(db, purchase_order.id)
+
+
+@app.delete("/purchase-orders/{purchase_order_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_purchase_order(purchase_order_id: int, db: Session = Depends(get_db)) -> None:
+    purchase_order = db.get(PurchaseOrder, purchase_order_id)
+    if purchase_order is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Purchase order not found")
+    if purchase_order.status != "draft":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only draft purchase orders can be deleted")
+
+    db.delete(purchase_order)
+    db.commit()
 
 
 @app.get("/payment-claims", response_model=list[PaymentClaimOut])

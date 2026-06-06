@@ -31,11 +31,29 @@ const translations = {
     actualCost: "Actual Cost",
     approvedClaims: "Approved Claims",
     lowStock: "Low Stock",
+    submittedPurchaseOrders: "POs Pending Approval",
+    approvedPurchaseValue: "Approved PO Value",
+    receivedPurchaseValue: "Received PO Value",
     createProject: "Create Project",
     saveProject: "Save Project",
     updateProject: "Update Project",
     deleteProject: "Delete",
     confirmDeleteProject: "Delete this project?",
+    createPurchaseOrder: "Create Purchase Order",
+    savePurchaseOrder: "Save Purchase Order",
+    deletePurchaseOrder: "Delete",
+    confirmDeletePurchaseOrder: "Delete this purchase order?",
+    purchaseOrderNo: "PO No.",
+    supplier: "Supplier",
+    orderedAt: "Ordered At",
+    procurementFlow: "Procurement Flow",
+    submitForApproval: "Submit",
+    approvePurchaseOrder: "Approve",
+    markReceived: "Receive",
+    returnToDraft: "Return to Draft",
+    draft: "Draft",
+    submitted: "Submitted",
+    received: "Received",
     code: "Code",
     viewDetails: "Details",
     backToDashboard: "Back",
@@ -89,11 +107,29 @@ const translations = {
     actualCost: "實際成本",
     approvedClaims: "已核准請款",
     lowStock: "低庫存",
+    submittedPurchaseOrders: "待核准採購單",
+    approvedPurchaseValue: "已核准採購金額",
+    receivedPurchaseValue: "已收貨採購金額",
     createProject: "新增工程案",
     saveProject: "儲存工程案",
     updateProject: "更新工程案",
     deleteProject: "刪除",
     confirmDeleteProject: "確定刪除此工程案？",
+    createPurchaseOrder: "新增採購單",
+    savePurchaseOrder: "儲存採購單",
+    deletePurchaseOrder: "刪除",
+    confirmDeletePurchaseOrder: "確定刪除此採購單？",
+    purchaseOrderNo: "採購單號",
+    supplier: "供應商",
+    orderedAt: "採購日期",
+    procurementFlow: "採購流程",
+    submitForApproval: "送審",
+    approvePurchaseOrder: "核准",
+    markReceived: "收貨",
+    returnToDraft: "退回草稿",
+    draft: "草稿",
+    submitted: "已送審",
+    received: "已收貨",
     code: "編號",
     viewDetails: "詳情",
     backToDashboard: "返回",
@@ -142,6 +178,9 @@ type DashboardSummary = {
   total_approved_claims: string;
   low_stock_count: number;
   over_budget_project_count: number;
+  submitted_purchase_order_count: number;
+  approved_purchase_order_amount: string;
+  received_purchase_order_amount: string;
 };
 
 type ProjectCostCenter = {
@@ -205,8 +244,17 @@ type PurchaseOrder = {
   id: number;
   po_no: string;
   project_code: string;
+  project_name: string;
   supplier_name: string;
   status: string;
+  order_amount: string;
+  ordered_at: string;
+};
+
+type PurchaseOrderFormState = {
+  po_no: string;
+  project_code: string;
+  supplier_name: string;
   order_amount: string;
   ordered_at: string;
 };
@@ -279,6 +327,28 @@ function datePlaceholder(locale: Locale) {
   return locale === "zh" ? "例：2026-06-01" : "e.g. 2026-06-01";
 }
 
+function parseHashRoute(): { projectId: number | null; view: View } {
+  const hash = window.location.hash.replace(/^#/, "");
+  const [viewName, rawId] = hash.split(":");
+  if (viewName === "projects" || viewName === "procurement" || viewName === "inventory" || viewName === "billing") {
+    return {
+      projectId: viewName === "projects" && rawId ? Number(rawId) : null,
+      view: viewName,
+    };
+  }
+  return {
+    projectId: null,
+    view: "dashboard",
+  };
+}
+
+function setHashRoute(view: View, projectId: number | null = null) {
+  const nextHash = projectId ? `#${view}:${projectId}` : `#${view}`;
+  if (window.location.hash !== nextHash) {
+    window.location.hash = nextHash;
+  }
+}
+
 function App() {
   const [locale, setLocale] = React.useState<Locale>(() => {
     const savedLocale = window.localStorage.getItem("erp-locale");
@@ -290,8 +360,8 @@ function App() {
   const [materials, setMaterials] = React.useState<Material[]>([]);
   const [purchaseOrders, setPurchaseOrders] = React.useState<PurchaseOrder[]>([]);
   const [paymentClaims, setPaymentClaims] = React.useState<PaymentClaim[]>([]);
-  const [activeView, setActiveView] = React.useState<View>("dashboard");
-  const [selectedProjectId, setSelectedProjectId] = React.useState<number | null>(null);
+  const [activeView, setActiveView] = React.useState<View>(() => parseHashRoute().view);
+  const [selectedProjectId, setSelectedProjectId] = React.useState<number | null>(() => parseHashRoute().projectId);
   const [error, setError] = React.useState<string | null>(null);
 
   const loadData = React.useCallback(async () => {
@@ -320,6 +390,27 @@ function App() {
     void loadData();
   }, [loadData]);
 
+  React.useEffect(() => {
+    if (selectedProjectId !== null && projects.length > 0 && !projects.some((project) => project.id === selectedProjectId)) {
+      setSelectedProjectId(null);
+      setHashRoute("projects");
+    }
+  }, [projects, selectedProjectId]);
+
+  React.useEffect(() => {
+    function handleHashChange() {
+      const route = parseHashRoute();
+      setActiveView(route.view);
+      setSelectedProjectId(route.projectId);
+    }
+
+    if (!window.location.hash) {
+      setHashRoute(activeView, selectedProjectId);
+    }
+    window.addEventListener("hashchange", handleHashChange);
+    return () => window.removeEventListener("hashchange", handleHashChange);
+  }, [activeView, selectedProjectId]);
+
   const lowStockMaterials = materials.filter((material) => material.is_low_stock);
   const t = translations[locale];
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
@@ -332,17 +423,20 @@ function App() {
   function openProjectDetail(projectId: number) {
     setActiveView("projects");
     setSelectedProjectId(projectId);
+    setHashRoute("projects", projectId);
     window.scrollTo({ top: 0 });
   }
 
   function closeProjectDetail() {
     setSelectedProjectId(null);
+    setHashRoute("projects");
     window.scrollTo({ top: 0 });
   }
 
   function navigateTo(view: View) {
     setActiveView(view);
     setSelectedProjectId(null);
+    setHashRoute(view);
     window.scrollTo({ top: 0 });
   }
 
@@ -355,6 +449,7 @@ function App() {
       });
       await loadData();
       setActiveView("projects");
+      setHashRoute("projects");
     } catch (requestError) {
       setError((requestError as Error).message);
       throw requestError;
@@ -391,6 +486,53 @@ function App() {
     }
   }
 
+  async function createPurchaseOrder(purchaseOrder: PurchaseOrderFormState) {
+    try {
+      setError(null);
+      await sendJson<PurchaseOrder>("/purchase-orders", {
+        method: "POST",
+        body: JSON.stringify({
+          ...purchaseOrder,
+          status: "draft",
+        }),
+      });
+      await loadData();
+      setActiveView("procurement");
+      setHashRoute("procurement");
+    } catch (requestError) {
+      setError((requestError as Error).message);
+      throw requestError;
+    }
+  }
+
+  async function updatePurchaseOrderStatus(purchaseOrderId: number, nextStatus: string) {
+    try {
+      setError(null);
+      await sendJson<PurchaseOrder>(`/purchase-orders/${purchaseOrderId}/status`, {
+        method: "PATCH",
+        body: JSON.stringify({ status: nextStatus }),
+      });
+      await loadData();
+    } catch (requestError) {
+      setError((requestError as Error).message);
+    }
+  }
+
+  async function deletePurchaseOrder(purchaseOrderId: number) {
+    if (!window.confirm(t.confirmDeletePurchaseOrder)) {
+      return;
+    }
+    try {
+      setError(null);
+      await sendJson<void>(`/purchase-orders/${purchaseOrderId}`, {
+        method: "DELETE",
+      });
+      await loadData();
+    } catch (requestError) {
+      setError((requestError as Error).message);
+    }
+  }
+
   function renderActiveView() {
     if (activeView === "dashboard") {
       return (
@@ -400,6 +542,9 @@ function App() {
           <Metric icon={<ClipboardList />} label={t.actualCost} value={summary ? money(summary.total_actual_cost, locale) : "-"} />
           <Metric icon={<ReceiptText />} label={t.approvedClaims} value={summary ? money(summary.total_approved_claims, locale) : "-"} />
           <Metric icon={<AlertTriangle />} label={t.lowStock} value={summary?.low_stock_count ?? "-"} />
+          <Metric icon={<ClipboardList />} label={t.submittedPurchaseOrders} value={summary?.submitted_purchase_order_count ?? "-"} />
+          <Metric icon={<Banknote />} label={t.approvedPurchaseValue} value={summary ? money(summary.approved_purchase_order_amount, locale) : "-"} />
+          <Metric icon={<ReceiptText />} label={t.receivedPurchaseValue} value={summary ? money(summary.received_purchase_order_amount, locale) : "-"} />
         </section>
       );
     }
@@ -465,6 +610,8 @@ function App() {
     if (activeView === "procurement") {
       return (
         <section className="content-grid">
+          <PurchaseOrderCreatePanel locale={locale} onCreate={createPurchaseOrder} projects={projects} t={t} />
+          <PurchaseOrderFlowPanel locale={locale} purchaseOrders={purchaseOrders} t={t} />
           <section className="panel wide">
             <div className="panel-header">
               <h2>{t.navProcurement}</h2>
@@ -478,11 +625,19 @@ function App() {
                   <div>
                     <strong>{order.po_no}</strong>
                     <span>{order.project_code}</span>
-                    <small>{order.supplier_name}</small>
+                    <small>
+                      {order.supplier_name} · {date(order.ordered_at, locale)}
+                    </small>
                   </div>
                   <div>
                     <span className="status-tag">{order.status}</span>
                     <strong>{money(order.order_amount, locale)}</strong>
+                    <PurchaseOrderActions
+                      order={order}
+                      t={t}
+                      onDelete={() => deletePurchaseOrder(order.id)}
+                      onStatusChange={(nextStatus) => updatePurchaseOrderStatus(order.id, nextStatus)}
+                    />
                   </div>
                 </article>
               ))}
@@ -567,13 +722,13 @@ function App() {
   return (
     <main className="app-shell">
       <aside className="sidebar">
-        <div className="brand">
+        <button className="brand" type="button" onClick={() => navigateTo("dashboard")}>
           <HardHat size={25} />
           <div>
             <strong>{t.appName}</strong>
             <span>{t.subtitle}</span>
           </div>
-        </div>
+        </button>
         <nav>
           <button className={activeView === "dashboard" && !selectedProject ? "active" : ""} type="button" onClick={() => navigateTo("dashboard")}>
             {t.navDashboard}
@@ -844,6 +999,197 @@ function ProjectDetail({
         </section>
       </section>
     </section>
+  );
+}
+
+function PurchaseOrderCreatePanel({
+  locale,
+  onCreate,
+  projects,
+  t,
+}: {
+  locale: Locale;
+  onCreate: (purchaseOrder: PurchaseOrderFormState) => Promise<void>;
+  projects: ProjectCostCenter[];
+  t: (typeof translations)[Locale];
+}) {
+  const [form, setForm] = React.useState<PurchaseOrderFormState>({
+    po_no: "",
+    project_code: projects[0]?.code ?? "",
+    supplier_name: "",
+    order_amount: "",
+    ordered_at: "",
+  });
+  const [isSaving, setIsSaving] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!form.project_code && projects[0]) {
+      setForm((current) => ({
+        ...current,
+        project_code: projects[0].code,
+      }));
+    }
+  }, [form.project_code, projects]);
+
+  function updateField(field: keyof PurchaseOrderFormState, value: string) {
+    setForm((current) => ({
+      ...current,
+      [field]: value,
+    }));
+  }
+
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setIsSaving(true);
+    try {
+      await onCreate(form);
+      setForm({
+        po_no: "",
+        project_code: projects[0]?.code ?? "",
+        supplier_name: "",
+        order_amount: "",
+        ordered_at: "",
+      });
+    } catch {
+      // The parent renders the API error banner.
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  return (
+    <section className="panel wide">
+      <div className="panel-header">
+        <h2>{t.createPurchaseOrder}</h2>
+        <span>{t.draft}</span>
+      </div>
+      <form className="form-grid" onSubmit={handleSubmit}>
+        <label>
+          <span>{t.purchaseOrderNo}</span>
+          <input required value={form.po_no} onChange={(event) => updateField("po_no", event.target.value)} />
+        </label>
+        <label>
+          <span>{t.project}</span>
+          <select required value={form.project_code} onChange={(event) => updateField("project_code", event.target.value)}>
+            {projects.map((project) => (
+              <option key={project.id} value={project.code}>
+                {project.code}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>{t.supplier}</span>
+          <input required value={form.supplier_name} onChange={(event) => updateField("supplier_name", event.target.value)} />
+        </label>
+        <label>
+          <span>{t.actual}</span>
+          <input min="0" required step="1" type="number" value={form.order_amount} onChange={(event) => updateField("order_amount", event.target.value)} />
+        </label>
+        <label>
+          <span>{t.orderedAt}</span>
+          <input
+            inputMode="numeric"
+            pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}"
+            placeholder={datePlaceholder(locale)}
+            required
+            value={form.ordered_at}
+            onChange={(event) => updateField("ordered_at", event.target.value)}
+          />
+        </label>
+        <button className="primary-button" disabled={isSaving} type="submit">
+          {isSaving ? t.savePurchaseOrder : t.createPurchaseOrder}
+        </button>
+      </form>
+      <small className="form-note">
+        {t.actual}: {form.order_amount ? money(form.order_amount, locale) : "-"}
+      </small>
+    </section>
+  );
+}
+
+function PurchaseOrderFlowPanel({
+  locale,
+  purchaseOrders,
+  t,
+}: {
+  locale: Locale;
+  purchaseOrders: PurchaseOrder[];
+  t: (typeof translations)[Locale];
+}) {
+  const totals = purchaseOrders.reduce(
+    (current, order) => ({
+      ...current,
+      [order.status]: current[order.status as keyof typeof current] + 1,
+      receivedAmount: order.status === "received" ? current.receivedAmount + Number(order.order_amount) : current.receivedAmount,
+    }),
+    { approved: 0, draft: 0, received: 0, receivedAmount: 0, submitted: 0 },
+  );
+
+  return (
+    <section className="panel wide">
+      <div className="panel-header">
+        <h2>{t.procurementFlow}</h2>
+        <span>{money(totals.receivedAmount, locale)}</span>
+      </div>
+      <div className="flow-steps">
+        <FlowStep count={totals.draft} label={t.draft} />
+        <FlowStep count={totals.submitted} label={t.submitted} />
+        <FlowStep count={totals.approved} label={t.approved} />
+        <FlowStep count={totals.received} label={t.received} />
+      </div>
+    </section>
+  );
+}
+
+function FlowStep({ count, label }: { count: number; label: string }) {
+  return (
+    <div>
+      <strong>{count}</strong>
+      <span>{label}</span>
+    </div>
+  );
+}
+
+function PurchaseOrderActions({
+  onDelete,
+  onStatusChange,
+  order,
+  t,
+}: {
+  onDelete: () => void;
+  onStatusChange: (nextStatus: string) => void;
+  order: PurchaseOrder;
+  t: (typeof translations)[Locale];
+}) {
+  return (
+    <div className="action-row">
+      {order.status === "draft" ? (
+        <>
+          <button className="text-button" type="button" onClick={() => onStatusChange("submitted")}>
+            {t.submitForApproval}
+          </button>
+          <button className="text-button danger-button" type="button" onClick={onDelete}>
+            {t.deletePurchaseOrder}
+          </button>
+        </>
+      ) : null}
+      {order.status === "submitted" ? (
+        <>
+          <button className="text-button" type="button" onClick={() => onStatusChange("approved")}>
+            {t.approvePurchaseOrder}
+          </button>
+          <button className="text-button" type="button" onClick={() => onStatusChange("draft")}>
+            {t.returnToDraft}
+          </button>
+        </>
+      ) : null}
+      {order.status === "approved" ? (
+        <button className="text-button" type="button" onClick={() => onStatusChange("received")}>
+          {t.markReceived}
+        </button>
+      ) : null}
+    </div>
   );
 }
 

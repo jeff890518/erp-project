@@ -12,6 +12,9 @@ class DashboardSummary(BaseModel):
     total_approved_claims: Decimal
     low_stock_count: int
     over_budget_project_count: int
+    submitted_purchase_order_count: int
+    approved_purchase_order_amount: Decimal
+    received_purchase_order_amount: Decimal
 
 
 class ProjectCostCenterOut(BaseModel):
@@ -93,6 +96,27 @@ class PurchaseOrderOut(BaseModel):
     status: str
     order_amount: Decimal
     ordered_at: date
+
+
+class PurchaseOrderCreate(BaseModel):
+    po_no: str = Field(min_length=1)
+    project_code: str = Field(min_length=1)
+    supplier_name: str = Field(min_length=1)
+    status: str = "draft"
+    order_amount: Decimal = Decimal("0")
+    ordered_at: date
+
+
+class PurchaseOrderUpdate(BaseModel):
+    project_code: str | None = Field(default=None, min_length=1)
+    supplier_name: str | None = Field(default=None, min_length=1)
+    status: str | None = None
+    order_amount: Decimal | None = None
+    ordered_at: date | None = None
+
+
+class PurchaseOrderStatusUpdate(BaseModel):
+    status: str
 
 
 class PaymentClaimOut(BaseModel):
