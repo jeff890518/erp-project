@@ -69,4 +69,5 @@ This is intentionally small. The next development phase will expand the construc
 ## Documentation
 
 - API notes: `docs/api.md`
+- Diagrams: `docs/diagrams.md`
 - Roadmap: `docs/roadmap.md`
