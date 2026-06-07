@@ -1,5 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+import { QueryClient, QueryClientProvider, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -10,6 +11,7 @@ import {
   ListChecks,
   ReceiptText,
 } from "lucide-react";
+import { HashRouter, useLocation, useNavigate } from "react-router-dom";
 import "./styles.css";
 
 type Locale = "en" | "zh";
@@ -270,6 +272,15 @@ type PaymentClaim = {
   approved_amount: string;
 };
 
+type AppData = {
+  materials: Material[];
+  paymentClaims: PaymentClaim[];
+  projects: ProjectCostCenter[];
+  purchaseOrders: PurchaseOrder[];
+  summary: DashboardSummary;
+  workItems: WorkItem[];
+};
+
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
 async function fetchJson<T>(path: string): Promise<T> {
@@ -296,6 +307,25 @@ async function sendJson<T>(path: string, init: RequestInit): Promise<T> {
     return undefined as T;
   }
   return response.json() as Promise<T>;
+}
+
+async function loadAppData(): Promise<AppData> {
+  const [summary, projects, workItems, materials, purchaseOrders, paymentClaims] = await Promise.all([
+    fetchJson<DashboardSummary>("/dashboard"),
+    fetchJson<ProjectCostCenter[]>("/projects"),
+    fetchJson<WorkItem[]>("/work-items"),
+    fetchJson<Material[]>("/materials"),
+    fetchJson<PurchaseOrder[]>("/purchase-orders"),
+    fetchJson<PaymentClaim[]>("/payment-claims"),
+  ]);
+  return {
+    materials,
+    paymentClaims,
+    projects,
+    purchaseOrders,
+    summary,
+    workItems,
+  };
 }
 
 function money(value: string | number, locale: Locale) {
@@ -327,9 +357,8 @@ function datePlaceholder(locale: Locale) {
   return locale === "zh" ? "例：2026-06-01" : "e.g. 2026-06-01";
 }
 
-function parseHashRoute(): { projectId: number | null; view: View } {
-  const hash = window.location.hash.replace(/^#/, "");
-  const [viewName, rawId] = hash.split(":");
+function parsePathRoute(pathname: string): { projectId: number | null; view: View } {
+  const [, viewName, rawId] = pathname.split("/");
   if (viewName === "projects" || viewName === "procurement" || viewName === "inventory" || viewName === "billing") {
     return {
       projectId: viewName === "projects" && rawId ? Number(rawId) : null,
@@ -342,78 +371,109 @@ function parseHashRoute(): { projectId: number | null; view: View } {
   };
 }
 
-function setHashRoute(view: View, projectId: number | null = null) {
-  const nextHash = projectId ? `#${view}:${projectId}` : `#${view}`;
-  if (window.location.hash !== nextHash) {
-    window.location.hash = nextHash;
-  }
-}
-
 function App() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [locale, setLocale] = React.useState<Locale>(() => {
     const savedLocale = window.localStorage.getItem("erp-locale");
     return savedLocale === "zh" || savedLocale === "en" ? savedLocale : "zh";
   });
-  const [summary, setSummary] = React.useState<DashboardSummary | null>(null);
-  const [projects, setProjects] = React.useState<ProjectCostCenter[]>([]);
-  const [workItems, setWorkItems] = React.useState<WorkItem[]>([]);
-  const [materials, setMaterials] = React.useState<Material[]>([]);
-  const [purchaseOrders, setPurchaseOrders] = React.useState<PurchaseOrder[]>([]);
-  const [paymentClaims, setPaymentClaims] = React.useState<PaymentClaim[]>([]);
-  const [activeView, setActiveView] = React.useState<View>(() => parseHashRoute().view);
-  const [selectedProjectId, setSelectedProjectId] = React.useState<number | null>(() => parseHashRoute().projectId);
   const [error, setError] = React.useState<string | null>(null);
-
-  const loadData = React.useCallback(async () => {
-    setError(null);
-    try {
-      const [dashboardSummary, projectRows, workItemRows, materialRows, purchaseOrderRows, paymentClaimRows] = await Promise.all([
-      fetchJson<DashboardSummary>("/dashboard"),
-      fetchJson<ProjectCostCenter[]>("/projects"),
-      fetchJson<WorkItem[]>("/work-items"),
-      fetchJson<Material[]>("/materials"),
-      fetchJson<PurchaseOrder[]>("/purchase-orders"),
-      fetchJson<PaymentClaim[]>("/payment-claims"),
-    ]);
-      setSummary(dashboardSummary);
-      setProjects(projectRows);
-      setWorkItems(workItemRows);
-      setMaterials(materialRows);
-      setPurchaseOrders(purchaseOrderRows);
-      setPaymentClaims(paymentClaimRows);
-    } catch (requestError) {
-      setError((requestError as Error).message);
-    }
-  }, []);
-
-  React.useEffect(() => {
-    void loadData();
-  }, [loadData]);
-
-  React.useEffect(() => {
-    if (selectedProjectId !== null && projects.length > 0 && !projects.some((project) => project.id === selectedProjectId)) {
-      setSelectedProjectId(null);
-      setHashRoute("projects");
-    }
-  }, [projects, selectedProjectId]);
-
-  React.useEffect(() => {
-    function handleHashChange() {
-      const route = parseHashRoute();
-      setActiveView(route.view);
-      setSelectedProjectId(route.projectId);
-    }
-
-    if (!window.location.hash) {
-      setHashRoute(activeView, selectedProjectId);
-    }
-    window.addEventListener("hashchange", handleHashChange);
-    return () => window.removeEventListener("hashchange", handleHashChange);
-  }, [activeView, selectedProjectId]);
+  const appDataQuery = useQuery({
+    queryFn: loadAppData,
+    queryKey: ["app-data"],
+  });
+  const appData = appDataQuery.data;
+  const summary = appData?.summary ?? null;
+  const projects = appData?.projects ?? [];
+  const workItems = appData?.workItems ?? [];
+  const materials = appData?.materials ?? [];
+  const purchaseOrders = appData?.purchaseOrders ?? [];
+  const paymentClaims = appData?.paymentClaims ?? [];
+  const route = parsePathRoute(location.pathname);
+  const activeView = route.view;
+  const selectedProjectId = route.projectId;
 
   const lowStockMaterials = materials.filter((material) => material.is_low_stock);
   const t = translations[locale];
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
+  const queryError = appDataQuery.error instanceof Error ? appDataQuery.error.message : null;
+  const errorMessage = error ?? queryError;
+
+  React.useEffect(() => {
+    if (selectedProjectId !== null && projects.length > 0 && !selectedProject) {
+      navigate("/projects", { replace: true });
+    }
+  }, [navigate, projects.length, selectedProject, selectedProjectId]);
+
+  async function refreshAppData() {
+    await queryClient.invalidateQueries({ queryKey: ["app-data"] });
+  }
+
+  const createProjectMutation = useMutation({
+    mutationFn: (project: ProjectFormState) =>
+      sendJson<ProjectCostCenter>("/projects", {
+        method: "POST",
+        body: JSON.stringify(project),
+      }),
+    onSuccess: async () => {
+      await refreshAppData();
+      navigate("/projects");
+    },
+  });
+
+  const updateProjectMutation = useMutation({
+    mutationFn: ({ project, projectId }: { project: Partial<ProjectFormState>; projectId: number }) =>
+      sendJson<ProjectCostCenter>(`/projects/${projectId}`, {
+        method: "PATCH",
+        body: JSON.stringify(project),
+      }),
+    onSuccess: refreshAppData,
+  });
+
+  const deleteProjectMutation = useMutation({
+    mutationFn: (projectId: number) =>
+      sendJson<void>(`/projects/${projectId}`, {
+        method: "DELETE",
+      }),
+    onSuccess: async () => {
+      await refreshAppData();
+      navigate("/projects");
+    },
+  });
+
+  const createPurchaseOrderMutation = useMutation({
+    mutationFn: (purchaseOrder: PurchaseOrderFormState) =>
+      sendJson<PurchaseOrder>("/purchase-orders", {
+        method: "POST",
+        body: JSON.stringify({
+          ...purchaseOrder,
+          status: "draft",
+        }),
+      }),
+    onSuccess: async () => {
+      await refreshAppData();
+      navigate("/procurement");
+    },
+  });
+
+  const updatePurchaseOrderStatusMutation = useMutation({
+    mutationFn: ({ nextStatus, purchaseOrderId }: { nextStatus: string; purchaseOrderId: number }) =>
+      sendJson<PurchaseOrder>(`/purchase-orders/${purchaseOrderId}/status`, {
+        method: "PATCH",
+        body: JSON.stringify({ status: nextStatus }),
+      }),
+    onSuccess: refreshAppData,
+  });
+
+  const deletePurchaseOrderMutation = useMutation({
+    mutationFn: (purchaseOrderId: number) =>
+      sendJson<void>(`/purchase-orders/${purchaseOrderId}`, {
+        method: "DELETE",
+      }),
+    onSuccess: refreshAppData,
+  });
 
   function changeLocale(nextLocale: Locale) {
     setLocale(nextLocale);
@@ -421,35 +481,24 @@ function App() {
   }
 
   function openProjectDetail(projectId: number) {
-    setActiveView("projects");
-    setSelectedProjectId(projectId);
-    setHashRoute("projects", projectId);
+    navigate(`/projects/${projectId}`);
     window.scrollTo({ top: 0 });
   }
 
   function closeProjectDetail() {
-    setSelectedProjectId(null);
-    setHashRoute("projects");
+    navigate("/projects");
     window.scrollTo({ top: 0 });
   }
 
   function navigateTo(view: View) {
-    setActiveView(view);
-    setSelectedProjectId(null);
-    setHashRoute(view);
+    navigate(view === "dashboard" ? "/" : `/${view}`);
     window.scrollTo({ top: 0 });
   }
 
   async function createProject(project: ProjectFormState) {
     try {
       setError(null);
-      await sendJson<ProjectCostCenter>("/projects", {
-        method: "POST",
-        body: JSON.stringify(project),
-      });
-      await loadData();
-      setActiveView("projects");
-      setHashRoute("projects");
+      await createProjectMutation.mutateAsync(project);
     } catch (requestError) {
       setError((requestError as Error).message);
       throw requestError;
@@ -459,11 +508,7 @@ function App() {
   async function updateProject(projectId: number, project: Partial<ProjectFormState>) {
     try {
       setError(null);
-      await sendJson<ProjectCostCenter>(`/projects/${projectId}`, {
-        method: "PATCH",
-        body: JSON.stringify(project),
-      });
-      await loadData();
+      await updateProjectMutation.mutateAsync({ project, projectId });
     } catch (requestError) {
       setError((requestError as Error).message);
       throw requestError;
@@ -476,11 +521,7 @@ function App() {
     }
     try {
       setError(null);
-      await sendJson<void>(`/projects/${projectId}`, {
-        method: "DELETE",
-      });
-      await loadData();
-      setSelectedProjectId(null);
+      await deleteProjectMutation.mutateAsync(projectId);
     } catch (requestError) {
       setError((requestError as Error).message);
     }
@@ -489,16 +530,7 @@ function App() {
   async function createPurchaseOrder(purchaseOrder: PurchaseOrderFormState) {
     try {
       setError(null);
-      await sendJson<PurchaseOrder>("/purchase-orders", {
-        method: "POST",
-        body: JSON.stringify({
-          ...purchaseOrder,
-          status: "draft",
-        }),
-      });
-      await loadData();
-      setActiveView("procurement");
-      setHashRoute("procurement");
+      await createPurchaseOrderMutation.mutateAsync(purchaseOrder);
     } catch (requestError) {
       setError((requestError as Error).message);
       throw requestError;
@@ -508,11 +540,7 @@ function App() {
   async function updatePurchaseOrderStatus(purchaseOrderId: number, nextStatus: string) {
     try {
       setError(null);
-      await sendJson<PurchaseOrder>(`/purchase-orders/${purchaseOrderId}/status`, {
-        method: "PATCH",
-        body: JSON.stringify({ status: nextStatus }),
-      });
-      await loadData();
+      await updatePurchaseOrderStatusMutation.mutateAsync({ nextStatus, purchaseOrderId });
     } catch (requestError) {
       setError((requestError as Error).message);
     }
@@ -524,10 +552,7 @@ function App() {
     }
     try {
       setError(null);
-      await sendJson<void>(`/purchase-orders/${purchaseOrderId}`, {
-        method: "DELETE",
-      });
-      await loadData();
+      await deletePurchaseOrderMutation.mutateAsync(purchaseOrderId);
     } catch (requestError) {
       setError((requestError as Error).message);
     }
@@ -766,7 +791,7 @@ function App() {
           </div>
         </header>
 
-        {error ? <div className="error-banner">{error}</div> : null}
+        {errorMessage ? <div className="error-banner">{errorMessage}</div> : null}
 
         {selectedProject ? (
           <ProjectDetail
@@ -1348,8 +1373,14 @@ function Metric({ icon, label, value }: { icon: React.ReactNode; label: string; 
   );
 }
 
+const queryClient = new QueryClient();
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <App />
+    <QueryClientProvider client={queryClient}>
+      <HashRouter>
+        <App />
+      </HashRouter>
+    </QueryClientProvider>
   </React.StrictMode>,
 );
